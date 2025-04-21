@@ -1,0 +1,27 @@
+{
+  "users": {
+    "123456789012345678": {
+      "display_name": "Player1",
+      "rank": "Diamond",
+      "other_data": "value"
+    },
+    "987654321098765432": {
+      "display_name": "Player2",
+      "rank": "Platinum",
+      "other_data": "value"
+    }
+  },
+  "strikes": {
+    "123456789012345678": {
+      "host": 1,
+      "grief": 0
+    },
+    "987654321098765432": {
+      "host": 2,
+      "grief": 1
+    }
+  },
+  "1321987310585249872": {
+    "display_name": "SubToXd3fy"
+  }
+}
