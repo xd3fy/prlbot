@@ -1,3 +1,10 @@
+import os
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN env var not found!")
+
+
 import aiohttp
 import asyncio
 import sys
