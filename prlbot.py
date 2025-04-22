@@ -58,7 +58,7 @@ class LeagueView(discord.ui.View):
             await thread.add_user(user)
 
         region_role = next((r.name for r in user.roles if r.name in ["NA", "EU", "ASIA", "OCE"]), "Not specified")
-         profile = user_data.get(str(user.id), {})
+        profile = user_data.get(str(user.id), {})
         rank_code = profile.get("rank", "n/a")
         tier_code = profile.get("tier", "n/a")
 
