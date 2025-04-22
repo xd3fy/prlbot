@@ -611,8 +611,18 @@ async def strike(interaction: discord.Interaction, user: discord.Member, striket
     await interaction.response.defer(thinking=False, ephemeral=True)
     guild = interaction.guild
 
-    # get or init
+    # Get or init user data
     player_data = active_strikes.get(str(user.id), {"host": 0, "grief": 0})
+
+    # Strike cap check
+    if player_data[striketype] >= 3:
+        await interaction.followup.send(
+            f"**Error:** {user.mention} already has 3 `{striketype}` strikes. You cannot add more.",
+            ephemeral=True
+        )
+        return
+
+    # Add strike
     player_data[striketype] += 1
     active_strikes[str(user.id)] = player_data
     save_strike_data()
@@ -629,36 +639,37 @@ async def strike(interaction: discord.Interaction, user: discord.Member, striket
         if r and r not in user.roles:
             await user.add_roles(r)
             role_assigned = r.name
-    await interaction.followup.send("Done.")
-    
+
+    await interaction.followup.send("Strike added successfully.", ephemeral=True)
+
+    # Log channel embed
     log_channel = guild.get_channel(1357869099958403072)
     if log_channel:
         embed = discord.Embed(
             title="**Strike Added**",
             description=f"A **{striketype}** strike has been added to {user.mention} by {interaction.user.mention}.",
             color=discord.Color.red(),
-           
         )
-        embed.add_field(name="Strike Type",  value=striketype.capitalize(), inline=False)
-        embed.add_field(name="Reason",       value=reason,              inline=False)
+        embed.add_field(name="Strike Type", value=striketype.capitalize(), inline=False)
+        embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Host Strikes", value=player_data["host"], inline=True)
-        embed.add_field(name="Grief Strikes",value=player_data["grief"],inline=True)
+        embed.add_field(name="Grief Strikes", value=player_data["grief"], inline=True)
         if role_assigned:
             embed.add_field(name="Role Assigned", value=role_assigned, inline=False)
 
         await log_channel.send(embed=embed)
 
+    # Strikes channel embed
     strikes_channel = discord.utils.get(guild.text_channels, name="host-strikes")
     if strikes_channel:
         embed = discord.Embed(
             title="Strike Notification",
             description=f"A **{striketype}** strike has been added to {user.mention}.",
             color=discord.Color.red(),
-          
         )
-        embed.add_field(name="Reason",       value=reason,              inline=False)
+        embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Host Strikes", value=player_data["host"], inline=True)
-        embed.add_field(name="Grief Strikes",value=player_data["grief"],inline=True)
+        embed.add_field(name="Grief Strikes", value=player_data["grief"], inline=True)
 
         await strikes_channel.send(embed=embed)
 
@@ -674,58 +685,69 @@ async def strike(interaction: discord.Interaction, user: discord.Member, striket
 async def strikeremove(interaction: discord.Interaction, user: discord.Member, striketype: str, reason: str):
     await interaction.response.defer(thinking=False, ephemeral=True)
     guild = interaction.guild
-    player_data = active_strikes.get(str(user.id), {"host": 0, "grief": 0})
+    user_id = str(user.id)
 
-    if player_data[striketype] > 0:
-        player_data[striketype] -= 1
-    else:
-        await interaction.response.send_message(f"{user.mention} has no **{striketype}** strikes to remove.", ephemeral=True)
+    # Get or initialize the player's strike data
+    player_data = active_strikes.get(user_id, {"host": 0, "grief": 0})
+
+    # Error if the user doesn't have a strike of that type
+    if player_data.get(striketype, 0) <= 0:
+        await interaction.followup.send(
+            f"{user.mention} has no **{striketype}** strikes to remove.",
+            ephemeral=True
+        )
         return
 
-    active_strikes[str(user.id)] = player_data
+    # Remove a strike
+    player_data[striketype] -= 1
+    active_strikes[user_id] = player_data
     save_strike_data()
 
+    # Remove associated role if below threshold
     role_removed = None
     if striketype == "host" and player_data["host"] < 3:
-        r = discord.utils.get(guild.roles, name="Host Back Ban")
-        if r and r in user.roles:
-            await user.remove_roles(r)
-            role_removed = r.name
+        role = discord.utils.get(guild.roles, name="Host Back Ban")
+        if role and role in user.roles:
+            await user.remove_roles(role)
+            role_removed = role.name
 
-    if striketype == "grief" and player_data["grief"] < 3:
-        r = discord.utils.get(guild.roles, name="Griefing Bail")
-        if r and r in user.roles:
-            await user.remove_roles(r)
-            role_removed = r.name
-    await interaction.followup.send("Done.")
+    elif striketype == "grief" and player_data["grief"] < 3:
+        role = discord.utils.get(guild.roles, name="Griefing Bail")
+        if role and role in user.roles:
+            await user.remove_roles(role)
+            role_removed = role.name
+
+    # Confirm to command user
+    await interaction.followup.send("Strike successfully removed.", ephemeral=True)
+
+    # Log to #strike-logs channel
     log_channel = guild.get_channel(1357869099958403072)
     if log_channel:
         embed = discord.Embed(
             title="**Strike Removed**",
             description=f"A **{striketype}** strike has been removed from {user.mention} by {interaction.user.mention}.",
-            color=discord.Color.green(),
-           
+            color=discord.Color.green()
         )
-        embed.add_field(name="Strike Type",            value=striketype.capitalize(), inline=False)
-        embed.add_field(name="Reason",                 value=reason,              inline=False)
-        embed.add_field(name="Total Host Strikes",     value=player_data["host"], inline=True)
-        embed.add_field(name="Total Grief Strikes",    value=player_data["grief"],inline=True)
+        embed.add_field(name="Strike Type", value=striketype.capitalize(), inline=False)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name="Total Host Strikes", value=player_data["host"], inline=True)
+        embed.add_field(name="Total Grief Strikes", value=player_data["grief"], inline=True)
         if role_removed:
             embed.add_field(name="Role Removed", value=role_removed, inline=False)
 
         await log_channel.send(embed=embed)
 
+    # Send notification to public channel
     strikes_channel = discord.utils.get(guild.text_channels, name="host-strikes")
     if strikes_channel:
         embed = discord.Embed(
             title="Strike Removal Notification",
             description=f"A **{striketype}** strike has been removed from {user.mention}.",
-            color=discord.Color.green(),
-        
+            color=discord.Color.green()
         )
-        embed.add_field(name="Reason",       value=reason,              inline=False)
+        embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Host Strikes", value=player_data["host"], inline=True)
-        embed.add_field(name="Grief Strikes",value=player_data["grief"],inline=True)
+        embed.add_field(name="Grief Strikes", value=player_data["grief"], inline=True)
 
         await strikes_channel.send(embed=embed)
 
@@ -790,10 +812,13 @@ async def showdisplay(interaction: discord.Interaction, user: Optional[discord.M
 async def topplayers(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    await update_leaderboard(interaction.guild)
+    # Update leaderboard and expect a return (e.g., True if updated, False otherwise)
+    updated = await update_leaderboard(interaction.guild)
 
-    await interaction.followup.send("Top players leaderboard updated.", ephemeral=True)
-
+    if updated:
+        await interaction.followup.send("Top players leaderboard updated.", ephemeral=True)
+    else:
+        await interaction.followup.send("Leaderboard is already up-to-date. No changes made.", ephemeral=True)
 @bot.tree.command(name="help", description="View a list of PRL bot commands.")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -993,10 +1018,10 @@ async def on_message(message: discord.Message):
 
     log_channel = message.guild.get_channel(1357869099958403072)
     if log_channel:
-        prev = RANK_NAMES.get(old_rank, "N/A")
+        prev = RANK_NAMES.get(old_rank, old_rank.upper() if old_rank != "n/a" else "N/A")
         if old_tier:
             prev += f" {old_tier.capitalize()}"
-        newv = RANK_NAMES.get(new_rank, "N/A")
+        newv = RANK_NAMES.get(new_rank, new_rank.upper() if new_rank != "n/a" else "N/A")
         if new_tier:
             newv += f" {new_tier.capitalize()}"
 
