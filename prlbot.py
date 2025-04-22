@@ -3,8 +3,6 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN env var not found!")
-
-
 import aiohttp
 import asyncio
 import sys
@@ -852,6 +850,7 @@ async def help_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# Constants and mappings
 RANK_NAMES = {
     "r1": "R1 - Drone",
     "r2": "R2 - Bot",
@@ -863,47 +862,65 @@ RANK_NAMES = {
     "r8": "R8 - Master",
     "r9": "R9 - Supreme",
     "r10": "R10 - Overlord",
-    "r11": "R11 - Celestrial"
+    "r11": "R11 - Celestial"
 }
-TIER_NAMES = ["low", "mid", "high"]
-RANK_ORDER = list(RANK_NAMES.keys())[::-1]  # R11 to R1
+# Defines the hierarchy from highest (r11) to lowest (r1)
+RANK_ORDER = list(RANK_NAMES.keys())[::-1]
 
+TIER_NAMES = ["low", "mid", "high"]
+USER_DATA_FILE = "user_data_prl.json"
+
+# JSON load/save helpers
+def load_user_data():
+    if not os.path.exists(USER_DATA_FILE):
+        return {}
+    with open(USER_DATA_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+
+def save_user_data(data):
+    with open(USER_DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+# Helper for transient error messages
+def send_error(channel: discord.TextChannel, content: str):
+    return channel.send(content, delete_after=4)
+
+# Bot event
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignore DMs and bot messages
     if not message.guild or message.author.bot:
         return
 
-    # Only process messages in #rank-logs
-    if not getattr(message.channel, "name", "").lower() == "rank-logs":
+    if message.channel.name.lower() != "rank-logs":
         return
 
-    # Must mention a user
-    if not message.mentions:
+    if not message.mentions or " to " not in message.content.lower():
         return
 
     user = message.mentions[0]
     content = message.content.lower()
-
-    # Must follow the "old to new" format
-    if " to " not in content:
-        return
 
     try:
         old_text, new_text = content.split(" to ", 1)
         old_parts = old_text.split()[-2:]
         new_parts = new_text.split()[:2]
 
-        old_rank = old_parts[0] if old_parts[0] in RANK_NAMES else "n/a"
+        old_rank = old_parts[0] if old_parts and old_parts[0] in RANK_NAMES else "n/a"
         old_tier = old_parts[1] if len(old_parts) > 1 and old_parts[1] in TIER_NAMES else None
 
-        new_rank = new_parts[0] if new_parts[0] in RANK_NAMES else "n/a"
+        new_rank = new_parts[0] if new_parts and new_parts[0] in RANK_NAMES else "n/a"
         new_tier = new_parts[1] if len(new_parts) > 1 and new_parts[1] in TIER_NAMES else None
     except Exception:
-        await message.channel.send("**Error parsing rank change.** Format: `@user r7 low to r8 high`")
+        await send_error(
+            message.channel,
+            "**Error parsing rank change.** Use `@user r7 low to r8 high`"
+        )
         return
 
-    # Resolve Role objects
     old_rank_role = discord.utils.get(message.guild.roles, name=RANK_NAMES.get(old_rank))
     old_tier_role = discord.utils.get(
         message.guild.roles,
@@ -915,81 +932,91 @@ async def on_message(message: discord.Message):
         name=new_tier.capitalize() if new_tier else None
     )
 
-    # 1) Validate old rank
-    if old_rank != "n/a":
-        if not old_rank_role or old_rank_role not in user.roles:
-            await message.channel.send(
-                f"**Error:** {user.mention} does not have the rank `{RANK_NAMES[old_rank]}`."
-            )
-            return
-
-    # 2) Validate old tier (if provided)
-    if old_tier:
-        if not old_tier_role or old_tier_role not in user.roles:
-            await message.channel.send(
-                f"**Error:** {user.mention} does not have the tier `{old_tier.capitalize()}`."
-            )
-            return
-
-    # 3) Validate new rank
-    if new_rank == "n/a" or not new_rank_role:
-        await message.channel.send(
-            f"**Error:** Invalid new rank `{new_parts[0]}`."
+    if old_rank != "n/a" and (not old_rank_role or old_rank_role not in user.roles):
+        await send_error(
+            message.channel,
+            f"**Error:** {user.mention} does not have rank `{RANK_NAMES.get(old_rank, old_rank)}`."
         )
         return
 
-    # 4) Validate new tier (if provided)
-    if new_tier:
-        if not new_tier_role:
-            await message.channel.send(
-                f"**Error:** Invalid new tier `{new_parts[1]}`."
-            )
-            return
+    if old_tier and (not old_tier_role or old_tier_role not in user.roles):
+        await send_error(
+            message.channel,
+            f"**Error:** {user.mention} does not have tier `{old_tier.capitalize()}`."
+        )
+        return
 
-    # All validations passed → remove old roles
-    to_remove = []
+    if new_rank != "n/a" and not new_rank_role:
+        await send_error(
+            message.channel,
+            f"**Error:** Invalid new rank `{new_rank}`."
+        )
+        return
+
+    if new_tier and not new_tier_role:
+        await send_error(
+            message.channel,
+            f"**Error:** Invalid new tier `{new_tier}`."
+        )
+        return
+
+    roles_to_remove = []
     if old_rank_role and old_rank_role in user.roles:
-        to_remove.append(old_rank_role)
+        roles_to_remove.append(old_rank_role)
     if old_tier_role and old_tier_role in user.roles:
-        to_remove.append(old_tier_role)
+        roles_to_remove.append(old_tier_role)
 
-    if to_remove:
-        await user.remove_roles(*to_remove)
+    if roles_to_remove:
+        await user.remove_roles(*roles_to_remove)
 
-    # Add new roles
-    to_add = []
-    if new_rank_role and new_rank_role not in user.roles:
-        to_add.append(new_rank_role)
-    if new_tier_role and new_tier_role not in user.roles:
-        to_add.append(new_tier_role)
+    roles_to_add = []
+    if new_rank != "n/a" and new_rank_role and new_rank_role not in user.roles:
+        roles_to_add.append(new_rank_role)
+    if new_tier and new_tier_role and new_tier_role not in user.roles:
+        roles_to_add.append(new_tier_role)
 
-    if to_add:
-        await user.add_roles(*to_add)
+    if roles_to_add:
+        await user.add_roles(*roles_to_add)
 
-    # Log the change
+    # Save to JSON
+    data = load_user_data()
+    data[str(user.id)] = {
+        "rank": new_rank if new_rank in RANK_NAMES else "n/a",
+        "tier": new_tier if new_tier in TIER_NAMES else "n/a"
+    }
+    save_user_data(data)
+
+    await message.channel.send(
+        f"Updated {user.mention}: rank → `{new_rank}` | tier → `{new_tier or 'n/a'}`",
+        delete_after=4
+    )
+
     log_channel = message.guild.get_channel(1357869099958403072)
     if log_channel:
-        embed = discord.Embed(
-            title="Rank Change Logged",
-            description=f"{user.mention} has changed rank.",
-            color=discord.Color.purple()
-        )
-        prev = f"{RANK_NAMES.get(old_rank, 'N/A')}"
+        prev = RANK_NAMES.get(old_rank, "N/A")
         if old_tier:
             prev += f" {old_tier.capitalize()}"
-        newv = f"{RANK_NAMES[new_rank]}"
+        newv = RANK_NAMES.get(new_rank, "N/A")
         if new_tier:
             newv += f" {new_tier.capitalize()}"
 
+        embed = discord.Embed(
+            title="Rank Change Logged",
+            color=discord.Color.purple(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="User", value=user.mention, inline=True)
         embed.add_field(name="Previous", value=prev, inline=True)
         embed.add_field(name="New", value=newv, inline=True)
         embed.set_footer(text=f"User ID: {user.id}")
         await log_channel.send(embed=embed)
 
-    # If either old or new was in top‑four ranks, refresh leaderboard
-    top4 = RANK_ORDER[:4]
-    if old_rank in top4 or new_rank in top4:
+    top5 = set(RANK_ORDER[:5])
+    was_top5 = old_rank in top5
+    now_top5 = new_rank in top5
+    if was_top5 != now_top5 or (was_top5 and old_rank != new_rank):
         await update_leaderboard(message.guild)
+
 
 async def update_leaderboard(guild: discord.Guild):
     leaderboard_channel = discord.utils.get(guild.text_channels, name="top-players")
@@ -997,14 +1024,13 @@ async def update_leaderboard(guild: discord.Guild):
         return
 
     top_players = []
-
     for member in guild.members:
-        for code in RANK_ORDER[:4]:  # R11 to R8
-            rank_name = RANK_NAMES[code]
-            rank_role = discord.utils.get(guild.roles, name=rank_name)
-            if rank_role and rank_role in member.roles:
-                tier = next((r.name for r in member.roles if r.name.lower() in TIER_NAMES), "Unranked")
-                top_players.append((member.display_name, rank_name, tier))
+        for code in RANK_ORDER[:5]:
+            role = discord.utils.get(guild.roles, name=RANK_NAMES[code])
+            if role and role in member.roles:
+                tier_role = next((r for r in member.roles if r.name.lower() in TIER_NAMES), None)
+                tier_str = tier_role.name if tier_role else "Unranked"
+                top_players.append((member.display_name, RANK_NAMES[code], tier_str))
                 break
 
     if not top_players:
@@ -1014,42 +1040,27 @@ async def update_leaderboard(guild: discord.Guild):
             color=discord.Color.gold()
         )
     else:
-        # Sort by rank and then name
-        top_players.sort(key=lambda p: (RANK_ORDER.index(p[1].split()[0].lower()), p[0].lower()))
-
+        top_players.sort(key=lambda p: (RANK_ORDER.index(list(RANK_NAMES.keys())[list(RANK_NAMES.values()).index(p[1])]), p[0].lower()))
         embed = discord.Embed(
             title="**WELCOME TO THE RANKED RING**",
-            description="═══════════════════════════════\n"
-                        "        **CHAMPIONS STAND TALL**\n"
-                        "═══════════════════════════════\n\n",
+            description="═══════════════════════════════\n        **CHAMPIONS STAND TALL**\n═══════════════════════════════\n\n",
             color=discord.Color.dark_gold()
         )
-
         medals = ["🥇", "🥈", "🥉"]
-        for i, player in enumerate(top_players):
-            if i < 3:
-                medal = medals[i]
-            else:
-                medal = f"#{i + 1}"
-            name, rank, tier = player
-            embed.description += f"{medal} **{name}**\n"
-            embed.description += f"        └── Rank: `{rank} {tier}`\n\n"
-
+        for i, (name, rank, tier) in enumerate(top_players):
+            medal = medals[i] if i < 3 else f"#{i+1}"
+            embed.description += f"{medal} **{name}**\n        └— Rank: `{rank} {tier}`\n\n"
         embed.description += "═══════════════════════════════"
 
-    embed.set_footer(text=f"Last Updated • {datetime.datetime.now().strftime('%B %d, %Y')}")
+    embed.set_footer(text=f"Last Updated • {datetime.now().strftime('%B %d, %Y')}")
 
-    # Update pinned message
     pins = await leaderboard_channel.pins()
     for msg in pins:
         if msg.author == guild.me and msg.embeds:
             await msg.edit(embed=embed)
             return
-
-    # If no pinned message, send new one
     msg = await leaderboard_channel.send(embed=embed)
     await msg.pin()
-
 import time
 start_time = time.time()
 
@@ -1119,4 +1130,3 @@ async def on_ready():
 
 
 bot.run(TOKEN)
-
