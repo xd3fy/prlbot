@@ -22,18 +22,29 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-# Assume 'active_games' is a global dictionary holding active games information
-active_games = {}
+# Load persistent user data from JSON
 user_data_file = "user_data_prl.json"
-
 try:
     with open(user_data_file, "r") as f:
         user_data = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError):
     user_data = {}
 
-class LeagueView(discord.ui.View):
-    def __init__(self, host_id, thread_id, hosting_msg_id, thread_msg_id, gametype, matchtype, region, player_cap):
+# Global store for active games
+active_games: dict[int, dict] = {}
+
+class LeagueView(View):
+    def __init__(
+        self,
+        host_id: int,
+        thread_id: int,
+        hosting_msg_id: int,
+        thread_msg_id: int,
+        gametype: str,
+        matchtype: str,
+        region: str,
+        player_cap: int
+    ):
         super().__init__(timeout=None)
         self.host_id = host_id
         self.thread_id = thread_id
@@ -44,118 +55,138 @@ class LeagueView(discord.ui.View):
         self.region = region
         self.player_cap = player_cap
 
-    async def add_player(self, interaction: discord.Interaction, user: discord.Member, display_name: str):
+    async def add_player(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+        display_name: str
+    ):
         game = active_games.get(self.host_id)
         if not game:
-            return await interaction.response.send_message("This game is no longer active.", ephemeral=True)
+            return await interaction.response.send_message(
+                "This game is no longer active.", ephemeral=True
+            )
 
-        if any(player["id"] == user.id for player in game["players"]):
-            return await interaction.response.send_message("You're already in this match.", ephemeral=True)
+        # Enforce capacity from in-memory game state
+        if len(game['players']) >= self.player_cap:
+            return await interaction.response.send_message(
+                f"Sorry, this match is full ({len(game['players'])}/{self.player_cap}).",
+                ephemeral=True
+            )
 
-        game["players"].append({"id": user.id, "display_name": display_name})
+        # Additional race-check using thread member count
         thread = interaction.guild.get_thread(self.thread_id)
+        if thread and thread.member_count >= self.player_cap:
+            return await interaction.response.send_message(
+                f"Sorry, this match is already at capacity ({thread.member_count}/{self.player_cap}).",
+                ephemeral=True
+            )
+
+        # Prevent duplicates
+        if any(p['id'] == user.id for p in game['players']):
+            return await interaction.response.send_message(
+                "You're already in this match.", ephemeral=True
+            )
+
+        # Add to state and thread
+        game['players'].append({"id": user.id, "display_name": display_name})
         if thread:
             await thread.add_user(user)
 
-        region_role = next((r.name for r in user.roles if r.name in ["NA", "EU", "ASIA", "OCE"]), "Not specified")
+        # Determine region role
+        region_role = next(
+            (r.name for r in user.roles if r.name in ["NA","EU","ASIA","OCE"]),
+            "Not specified"
+        )
+
+        # Fetch and format rank/tier
         profile = user_data.get(str(user.id), {})
         rank_code = profile.get("rank", "n/a")
         tier_code = profile.get("tier", "n/a")
-
-        # Format into something like "R8 High" or "Unranked"
         from_rank = RANK_NAMES.get(rank_code, "Unranked")
-        from_tier = tier_code.capitalize() if tier_code and tier_code != "n/a" else None
+        from_tier = tier_code.capitalize() if tier_code != "n/a" else None
         rank_display = f"{from_rank} {from_tier}" if from_tier else from_rank
 
-
+        # Send join embed
         join_embed = discord.Embed(
             description=(
                 f"{user.mention} has joined the match!\n"
                 f"Display Name: {display_name}\n"
                 f"Rank: {rank_display}\n"
                 f"Region: {region_role}"
-            ),
-            color=discord.Color.blue()
+            ), color=discord.Color.blue()
         )
-        await thread.send(embed=join_embed)
+        if thread:
+            await thread.send(embed=join_embed)
 
-        # Update player count in welcome message
-        async for msg in thread.history(limit=10, oldest_first=True):
-            if msg.embeds and msg.embeds[0].footer and msg.embeds[0].footer.text.startswith("Players:"):
-                updated_embed = msg.embeds[0]
-                updated_embed.set_footer(text=f"Players: {len(game['players'])}/{self.player_cap}")
-                try:
-                    await msg.edit(embed=updated_embed)
-                except Exception as e:
-                    print(f"[Error Updating Welcome Embed] {e}")
+        # Update footer of first thread message
+        if thread:
+            first_msg = None
+            async for msg in thread.history(limit=1, oldest_first=True):
+                first_msg = msg
                 break
+            if first_msg and first_msg.embeds and first_msg.embeds[0].footer:
+                footer = first_msg.embeds[0].footer.text
+                if footer.startswith("Players:"):
+                    updated = first_msg.embeds[0]
+                    updated.set_footer(text=f"Players: {len(game['players'])}/{self.player_cap}")
+                    try:
+                        await first_msg.edit(embed=updated)
+                    except Exception as e:
+                        print(f"[Error updating player count embed] {e}")
 
+        # Log join event
         log_channel = interaction.guild.get_channel(1357869099958403072)
         if log_channel:
-            uid = str(user.id)
-            ign = user_data.get(uid, {}).get("display_name", "Unknown IGN")
-            formatted_time = datetime.datetime.now().strftime("%A %d %B %Y at %H:%M")
-
-    # Extract region from the player's roles
-            region_role = next(
-                (role.name for role in user.roles if role.name.upper() in ["NA", "EU", "SA", "ASIA", "OCE", "AF"]),
-                "Unknown Region"
+            ign = user_data.get(str(user.id), {}).get("display_name", "Unknown IGN")
+            timestamp = datetime.datetime.now().strftime("%A %d %B %Y at %H:%M")
+            region_log = next(
+                (r.name for r in user.roles if r.name.upper() in ["NA","EU","SA","ASIA","OCE","AF"]),
+                "Unknown"
             )
-
             log_embed = discord.Embed(
-                title="**Player Join Log**",
+                title="Player Join Log",
                 description=(
                     f"**Player:** {user.mention} (`{user.display_name}`)\n"
                     f"**IGN:** `{ign}`\n"
-                    f"**Region:** `{region_role}`\n"
+                    f"**Region:** `{region_log}`\n"
                     f"**Host:** <@{self.host_id}>\n"
                     f"**Thread:** <#{self.thread_id}>"
-                ),
-                color=discord.Color.green()
+                ), color=discord.Color.green()
             )
-
-            log_embed.set_footer(
-                text=f"Players: {len(game['players'])}/{self.player_cap} • Thread ID: {self.thread_id} • {formatted_time}"
-            )
-
+            log_embed.set_footer(text=f"Players: {len(game['players'])}/{self.player_cap} • {timestamp}")
             await log_channel.send(embed=log_embed)
 
-        await interaction.response.send_message("You've joined the league!", ephemeral=True)
+        return await interaction.response.send_message("You've joined the league!", ephemeral=True)
 
-    @discord.ui.button(label="Join League", style=discord.ButtonStyle.primary, custom_id="join_league")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @button(label="Join League", style=discord.ButtonStyle.primary, custom_id="join_league")
+    async def join(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
         user = interaction.user
-
-        # Reload user_data fresh from file
-        try:
-            with open(user_data_file, "r") as f:
-                user_data.clear()
-                user_data.update(json.load(f))
-        except Exception as e:
-            print(f"[ERROR] Failed to reload user_data: {e}")
-
         game = active_games.get(self.host_id)
-        if not game or any(player["id"] == user.id for player in game["players"]):
-            return await interaction.response.send_message("You are already in the match or the match no longer exists.", ephemeral=True)
+        if not game:
+            return await interaction.response.send_message("Match no longer exists.", ephemeral=True)
 
-        user_entry = user_data.get(str(user.id))
-        display_name = user_entry.get("display_name") if user_entry else None
+        # Capacity check
+        if len(game['players']) >= self.player_cap:
+            return await interaction.response.send_message(
+                f"Sorry, this match is full ({len(game['players'])}/{self.player_cap}).", ephemeral=True
+            )
+        # Duplicate check
+        if any(p['id'] == user.id for p in game['players']):
+            return await interaction.response.send_message("You're already in.", ephemeral=True)
 
-        print(f"[DEBUG] Display name for {user.name} (ID: {user.id}): '{display_name}'")
-
-        if not display_name or not isinstance(display_name, str) or not display_name.strip():
-            print(f"[MODAL] Triggering display name modal for {user.name} (ID: {user.id})")
+        # Display name modal if needed
+        profile = user_data.get(str(user.id), {})
+        display_name = profile.get("display_name")
+        if not display_name or not display_name.strip():
             return await interaction.response.send_modal(LeagueNameModal(self, user))
 
         await self.add_player(interaction, user, display_name.strip())
 
-
-class LeagueNameModal(discord.ui.Modal, title="Enter Display Name"):
-    display_name = discord.ui.TextInput(
-        label="Display Name",
-        placeholder="Enter your in-game name",
-        max_length=32
-    )
+class LeagueNameModal(Modal, title="Enter Display Name"):
+    display_name = TextInput(label="Display Name", placeholder="Enter your in-game name", max_length=32)
 
     def __init__(self, view: LeagueView, user: discord.Member):
         super().__init__()
@@ -163,23 +194,21 @@ class LeagueNameModal(discord.ui.Modal, title="Enter Display Name"):
         self.user = user
 
     async def on_submit(self, interaction: discord.Interaction):
-        display_name = self.display_name.value.strip()
+        name = self.display_name.value.strip()
+        game = active_games.get(self.view.host_id)
+        thread = interaction.guild.get_thread(self.view.thread_id)
+        if game and (len(game['players']) >= self.view.player_cap or (thread and thread.member_count >= self.view.player_cap)):
+            return await interaction.response.send_message(
+                f"Sorry, match just filled ({len(game['players'])}/{self.view.player_cap}).", ephemeral=True
+            )
+        # Save to JSON and rewrite file
+        user_data[str(self.user.id)] = {"display_name": name}
+        with open(user_data_file, "w") as f:
+            json.dump(user_data, f, indent=2)
+        await self.view.add_player(interaction, self.user, name)
 
-        print(f"[SAVE] Saving display name: '{display_name}' for {self.user.name} (ID: {self.user.id})")
-
-        # Save to user_data and persist to file
-        user_data[str(self.user.id)] = user_data.get(str(self.user.id), {})
-        user_data[str(self.user.id)]["display_name"] = display_name
-
-        try:
-            with open(user_data_file, "w") as f:
-                json.dump(user_data, f, indent=2)
-        except Exception as e:
-            print(f"[ERROR] Could not save display name: {e}")
-            return await interaction.response.send_message("An error occurred while saving your display name.", ephemeral=True)
-
-        # Continue joining process
-        await self.view.add_player(interaction, self.user, display_name)
+# Example creation:
+player_caps = {"1s": 2, "2s": 4, "3s": 6, "4s": 8}
 
 
 @bot.tree.command(name="prlhostleague", description="Host a league match.")
